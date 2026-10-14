@@ -1,10 +1,13 @@
 package lru
 
+import "time"
+
 type Node struct {
-	key   string
-	value string
-	prev  *Node
-	next  *Node
+	key       string
+	value     string
+	expiresAt time.Time // zero = never expires
+	prev      *Node
+	next      *Node
 }
 
 type List struct {
