@@ -1,15 +1,20 @@
 // Package lru implements a fixed-capacity least-recently-used cache with
-// optional per-key TTL. It is NOT safe for concurrent use; callers must
-// synchronize (see package store).
+// optional per-key TTL. It is safe for concurrent use: every public method
+// takes c.mtx. The lock is a plain Mutex, not RWMutex, because Get moves
+// the entry to the front of the list, so every read is also a write.
 package lru
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type Cache struct {
 	capacity int
 	ll       *List            // front = most recently used
 	items    map[string]*Node // key -> node in ll
 	now      func() time.Time
+	mtx      sync.Mutex
 }
 
 func New(capacity int) *Cache { return NewWithClock(capacity, time.Now) }
@@ -28,6 +33,8 @@ func NewWithClock(capacity int, now func() time.Time) *Cache {
 }
 
 func (c *Cache) Get(key string) (string, bool) {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	n, ok := c.items[key]
 	if !ok {
 		return "", false
@@ -45,6 +52,8 @@ func (c *Cache) Set(key, value string) { c.SetWithTTL(key, value, 0) }
 // SetWithTTL stores value; ttl <= 0 means the key never expires.
 // Overwriting a key always replaces its TTL (Set clears it).
 func (c *Cache) SetWithTTL(key, value string, ttl time.Duration) {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	var exp time.Time
 	if ttl > 0 {
 		exp = c.now().Add(ttl)
@@ -63,6 +72,8 @@ func (c *Cache) SetWithTTL(key, value string, ttl time.Duration) {
 }
 
 func (c *Cache) Delete(key string) bool {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	n, ok := c.items[key]
 	if !ok {
 		return false
@@ -72,11 +83,17 @@ func (c *Cache) Delete(key string) bool {
 }
 
 // Len counts entries still held, including expired ones not yet purged.
-func (c *Cache) Len() int { return c.ll.Len() }
+func (c *Cache) Len() int {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.ll.Len()
+}
 
 // PurgeExpired removes every expired entry and returns how many it removed.
 // O(n): meant for a background janitor, never the read path.
 func (c *Cache) PurgeExpired() int {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 	removed := 0
 	for _, n := range c.items { // deleting during range is safe in Go
 		if c.expired(n) {
